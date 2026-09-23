@@ -269,6 +269,9 @@ export class LocalServer {
       }
     }
     if (clientMsg.type === "winner") {
+      if (this.restoringSave) {
+        return;
+      }
       this.winner = clientMsg;
       this.saveChain = this.saveChain
         .then(() => deleteSingleplayerGame())
