@@ -11,6 +11,7 @@ import {
   GroupTokenEvent,
   LobbyInfoEvent,
   PublicGameInfo,
+  Turn,
 } from "../core/Schemas";
 import { toWireGameStartInfo } from "../core/Util";
 import { GameEnv } from "../core/configuration/Config";
@@ -253,6 +254,8 @@ export interface JoinLobbyEvent {
   gameStartInfo?: GameStartInfo;
   // GameRecord exists when replaying an archived game.
   gameRecord?: GameRecord;
+  // Turns restored from a local singleplayer save.
+  resumeTurns?: Turn[];
   source?: "public" | "private" | "host" | "matchmaking" | "singleplayer";
   publicLobbyInfo?: GameInfo | PublicGameInfo;
   // Watch without playing.
@@ -1462,6 +1465,7 @@ class Client {
           ? toWireGameStartInfo(lobby.gameRecord.info)
           : undefined),
       gameRecord: lobby.gameRecord,
+      resumeTurns: lobby.resumeTurns,
       spectator: lobby.spectator,
     });
 
