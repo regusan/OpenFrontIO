@@ -199,16 +199,18 @@ export class LocalServer {
       } satisfies ServerStartGameMessage);
     }
     if (clientMsg.type === "intent") {
-      // Ignore live input until a saved game has caught up to its saved turn.
-      if (this.restoringSave) {
-        return;
-      }
       // Server stamps clientID - client doesn't send it
       const stampedIntent = {
         ...clientMsg.intent,
         clientID: this.clientID!,
       };
       if (stampedIntent.type === "toggle_pause") {
+        // The UI may emit its initial pause state while a save is replaying.
+        // Saved pause intents are already in replayTurns, so accepting it here
+        // would duplicate the state transition.
+        if (this.restoringSave) {
+          return;
+        }
         if (stampedIntent.paused) {
           // Pausing: add intent and end turn before pause takes effect
           this.intents.push(stampedIntent);
@@ -222,8 +224,8 @@ export class LocalServer {
         }
         return;
       }
-      // Don't process non-pause intents during replays or while paused
-      if (this.lobbyConfig.gameRecord || this.paused) {
+      // Don't process non-pause intents during replays, save catch-up, or while paused
+      if (this.lobbyConfig.gameRecord || this.restoringSave || this.paused) {
         return;
       }
 
