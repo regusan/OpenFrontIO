@@ -28,6 +28,11 @@ import { getPlayerCosmetics, prewarmCosmetics } from "./Cosmetics";
 import { crazyGamesSDK } from "./CrazyGamesSDK";
 import { GameStartingModal } from "./GameStartingModal";
 import { showInGameAlert } from "./InGameModal";
+import {
+  deleteSingleplayerGame,
+  loadSingleplayerGame,
+  type SingleplayerSave,
+} from "./SingleplayerSave";
 import { JoinLobbyEvent } from "./Main";
 import { fallbackPlayerName, ResolvedPlayerName } from "./PlayerName";
 import { UsernameInput } from "./UsernameInput";
@@ -214,6 +219,7 @@ export class SinglePlayerModal extends BaseModal {
   // nothing visible until every await in startGame() settles, which reads as
   // a hang rather than as loading whenever the network is slow or absent.
   @state() private starting: boolean = false;
+  @state() private savedGame: SingleplayerSave | null = null;
   // Identifies the current start attempt. Bumped on every start and on every
   // close, so an attempt that outlives its modal can tell it has been retired.
   private startAttempt: number = 0;
@@ -230,6 +236,9 @@ export class SinglePlayerModal extends BaseModal {
       this.handleUserMeResponse as EventListener,
     );
     void this.loadNationCount();
+    void loadSingleplayerGame().then((save) => {
+      if (this.isConnected) this.savedGame = save;
+    });
   }
 
   disconnectedCallback() {
@@ -576,6 +585,18 @@ export class SinglePlayerModal extends BaseModal {
                 class="mb-4 px-4 py-3 rounded-xl bg-yellow-500/20 border border-yellow-500/30 text-yellow-400 text-xs font-bold uppercase tracking-wider text-center"
               >
                 ${translateText("single_modal.options_changed_no_achievements")}
+              </div>`
+            : null}
+          ${this.savedGame
+            ? html`<div class="mb-3">
+                <o-button
+                  variant="secondary"
+                  width="block"
+                  size="lg"
+                  translationKey="single_modal.continue_saved_game"
+                  .disable=${this.starting}
+                  @click=${this.resumeSavedGame}
+                ></o-button>
               </div>`
             : null}
           <o-button
@@ -1034,6 +1055,42 @@ export class SinglePlayerModal extends BaseModal {
       },
     );
   }
+
+  private resumeSavedGame = async () => {
+    if (this.starting || !this.savedGame) return;
+    this.starting = true;
+    const save = this.savedGame;
+    const startingModal = document.querySelector("game-starting-modal");
+    if (startingModal instanceof GameStartingModal) {
+      startingModal.show();
+    }
+    try {
+      await deleteSingleplayerGame();
+      this.savedGame = null;
+
+      this.dispatchEvent(
+        new CustomEvent("join-lobby", {
+          detail: {
+            gameID: save.gameStartInfo.gameID,
+            gameStartInfo: save.gameStartInfo,
+            resumeTurns: save.turns,
+            resumeStartedAt: save.startedAt,
+            source: "singleplayer",
+          } satisfies JoinLobbyEvent,
+          bubbles: true,
+          composed: true,
+        }),
+      );
+      this.close();
+    } catch (error) {
+      if (startingModal instanceof GameStartingModal) {
+        startingModal.hide();
+      }
+      throw error;
+    } finally {
+      this.starting = false;
+    }
+  };
 
   private async startGame() {
     // A second click while the first is still resolving would dispatch a
