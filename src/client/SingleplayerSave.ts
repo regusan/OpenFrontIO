@@ -67,7 +67,13 @@ export async function loadSingleplayerGame(): Promise<SingleplayerSave | null> {
 
     const parsed = SingleplayerSaveSchema.safeParse(raw);
     if (!parsed.success || parsed.data.gitCommit !== ClientEnv.gitCommit()) {
-      await deleteSingleplayerGame();
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, "readwrite");
+        tx.objectStore(STORE_NAME).delete(SAVE_KEY);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
+      });
       return null;
     }
     return parsed.data;
