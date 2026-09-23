@@ -361,7 +361,12 @@ export class LocalServer {
     const snapshot = {
       startedAt: this.startedAt,
       gameStartInfo: this.lobbyConfig.gameStartInfo,
-      turns: [...this.turns],
+      // Clone turns as well as the array: hash messages can still mutate the
+      // most recent Turn while an IndexedDB write is queued.
+      turns: this.turns.map((turn) => ({
+        ...turn,
+        intents: turn.intents.map((intent) => ({ ...intent })),
+      })),
     };
     this.saveChain = this.saveChain
       .then(() => saveSingleplayerGame(snapshot))
