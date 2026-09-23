@@ -1065,9 +1065,6 @@ export class SinglePlayerModal extends BaseModal {
       startingModal.show();
     }
     try {
-      await deleteSingleplayerGame();
-      this.savedGame = null;
-
       this.dispatchEvent(
         new CustomEvent("join-lobby", {
           detail: {
@@ -1172,6 +1169,9 @@ export class SinglePlayerModal extends BaseModal {
 
       // The ad is long enough that the modal can be closed while it runs.
       if (attempt !== this.startAttempt) return;
+
+      await deleteSingleplayerGame();
+      this.savedGame = null;
 
       this.dispatchEvent(
         new CustomEvent("join-lobby", {
