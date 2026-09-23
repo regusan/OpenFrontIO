@@ -29,6 +29,10 @@ import {
 } from "./InputHandler";
 import { startSingleplayerHeartbeat } from "./SingleplayerHeartbeat";
 import {
+  deleteSingleplayerGame,
+  saveSingleplayerGame,
+} from "./SingleplayerSave";
+import {
   defaultReplaySpeedMultiplier,
   ReplaySpeedMultiplier,
 } from "./utilities/ReplaySpeedMultiplier";
@@ -43,10 +47,12 @@ const SPEED_ORDER: ReplaySpeedMultiplier[] = [
 
 // build a small backlog so MAX can catch up.
 const MAX_REPLAY_BACKLOG_TURNS = 60;
+const AUTOSAVE_INTERVAL_TURNS = 20;
 
 export class LocalServer {
-  // All turns from the game record on replay.
+  // Turns being replayed, either from an archived replay or a local save.
   private replayTurns: Turn[] = [];
+  private restoringSave = false;
 
   private turns: Turn[] = [];
 
@@ -94,7 +100,7 @@ export class LocalServer {
       const backlog = Math.max(0, this.turns.length - this.turnsExecuted);
       const allowReplayBacklog =
         this.replaySpeedMultiplier === ReplaySpeedMultiplier.fastest &&
-        this.lobbyConfig.gameRecord !== undefined;
+        (this.lobbyConfig.gameRecord !== undefined || this.restoringSave);
       const maxBacklog = allowReplayBacklog ? MAX_REPLAY_BACKLOG_TURNS : 0;
 
       const canQueueNextTurn =
@@ -133,12 +139,19 @@ export class LocalServer {
       });
     }
 
-    this.startedAt = Date.now();
+    this.startedAt = this.lobbyConfig.resumeStartedAt ?? Date.now();
     this.clientConnect();
     if (this.lobbyConfig.gameRecord) {
       this.replayTurns = decompressGameRecord(
         this.lobbyConfig.gameRecord,
       ).turns;
+    } else if (this.lobbyConfig.resumeTurns?.length) {
+      this.replayTurns = this.lobbyConfig.resumeTurns;
+      this.restoringSave = true;
+      this.replaySpeedMultiplier = ReplaySpeedMultiplier.fastest;
+      this.eventBus.emit(
+        new ReplaySpeedChangeEvent(this.replaySpeedMultiplier),
+      );
     }
     if (this.lobbyConfig.gameStartInfo === undefined) {
       throw new Error("missing gameStartInfo");
@@ -177,6 +190,10 @@ export class LocalServer {
       } satisfies ServerStartGameMessage);
     }
     if (clientMsg.type === "intent") {
+      // Ignore live input until a saved game has caught up to its saved turn.
+      if (this.restoringSave) {
+        return;
+      }
       // Server stamps clientID - client doesn't send it
       const stampedIntent = {
         ...clientMsg.intent,
@@ -242,6 +259,7 @@ export class LocalServer {
     }
     if (clientMsg.type === "winner") {
       this.winner = clientMsg;
+      void deleteSingleplayerGame();
       this.allPlayersStats = clientMsg.allPlayersStats;
       if (!this.isReplay) {
         // Archive as soon as the game is decided: endGame() only runs during
@@ -265,10 +283,19 @@ export class LocalServer {
     }
     if (this.replayTurns.length > 0) {
       if (this.turns.length >= this.replayTurns.length) {
-        this.endGame();
-        return;
+        if (this.isReplay) {
+          this.endGame();
+          return;
+        }
+        this.replayTurns = [];
+        this.restoringSave = false;
+        this.replaySpeedMultiplier = defaultReplaySpeedMultiplier;
+        this.eventBus.emit(
+          new ReplaySpeedChangeEvent(this.replaySpeedMultiplier),
+        );
+      } else {
+        this.intents = this.replayTurns[this.turns.length].intents;
       }
-      this.intents = this.replayTurns[this.turns.length].intents;
     }
     const pastTurn: Turn = {
       turnNumber: this.turns.length,
@@ -280,6 +307,13 @@ export class LocalServer {
       type: "turn",
       turn: pastTurn,
     });
+    if (
+      !this.isReplay &&
+      !this.restoringSave &&
+      this.turns.length % AUTOSAVE_INTERVAL_TURNS === 0
+    ) {
+      void this.persistSave();
+    }
   }
 
   public endGame() {
@@ -290,9 +324,32 @@ export class LocalServer {
     if (this.isReplay) {
       return;
     }
+    if (!this.winner) {
+      void this.persistSave();
+    }
     // Fallback for games that end without a winner (e.g. quitting early);
     // decided games were already archived at win time.
     this.archiveGameRecord(true);
+  }
+
+  private async persistSave(): Promise<void> {
+    if (
+      this.isReplay ||
+      this.restoringSave ||
+      this.winner ||
+      this.lobbyConfig.gameStartInfo === undefined
+    ) {
+      return;
+    }
+    try {
+      await saveSingleplayerGame({
+        startedAt: this.startedAt,
+        gameStartInfo: this.lobbyConfig.gameStartInfo,
+        turns: this.turns,
+      });
+    } catch (error) {
+      console.warn("Failed to save singleplayer game", error);
+    }
   }
 
   private archiveGameRecord(unloading: boolean) {
