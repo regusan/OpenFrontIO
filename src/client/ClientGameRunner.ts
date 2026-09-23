@@ -11,6 +11,7 @@ import {
   LobbyInfoEvent,
   PlayerCosmeticRefs,
   ServerMessage,
+  Turn,
 } from "../core/Schemas";
 import { findClosestBy, replacer } from "../core/Util";
 import {
@@ -106,6 +107,9 @@ export interface LobbyConfig {
   gameStartInfo?: GameStartInfo;
   // GameRecord exists when replaying an archived game.
   gameRecord?: GameRecord;
+  // Turns restored from a local singleplayer save before live play resumes.
+  resumeTurns?: Turn[];
+  resumeStartedAt?: number;
   // Watch without playing.
   spectator?: boolean;
 }

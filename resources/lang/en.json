@@ -1828,6 +1828,7 @@
     "title_with_name": "Send Troops to {name}"
   },
   "single_modal": {
+    "continue_saved_game": "Continue saved game",
     "max_timer_invalid": "Please enter a valid max timer value (1-120 minutes)",
     "medals_earned": "Medals",
     "medals_of_maps": "out of {total} maps",

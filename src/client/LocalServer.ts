@@ -29,6 +29,10 @@ import {
 } from "./InputHandler";
 import { startSingleplayerHeartbeat } from "./SingleplayerHeartbeat";
 import {
+  deleteSingleplayerGame,
+  saveSingleplayerGame,
+} from "./SingleplayerSave";
+import {
   defaultReplaySpeedMultiplier,
   ReplaySpeedMultiplier,
 } from "./utilities/ReplaySpeedMultiplier";
@@ -43,10 +47,13 @@ const SPEED_ORDER: ReplaySpeedMultiplier[] = [
 
 // build a small backlog so MAX can catch up.
 const MAX_REPLAY_BACKLOG_TURNS = 60;
+const AUTOSAVE_INTERVAL_TURNS = 20;
 
 export class LocalServer {
-  // All turns from the game record on replay.
+  // Turns being replayed, either from an archived replay or a local save.
   private replayTurns: Turn[] = [];
+  private restoringSave = false;
+  private resumePaused = false;
 
   private turns: Turn[] = [];
 
@@ -63,6 +70,7 @@ export class LocalServer {
   // skipped win-time uploads during teardown.
   private archived = false;
   private archiveInFlight = false;
+  private saveChain: Promise<void> = Promise.resolve();
 
   private turnsExecuted = 0;
   private turnStartTime = 0;
@@ -94,7 +102,7 @@ export class LocalServer {
       const backlog = Math.max(0, this.turns.length - this.turnsExecuted);
       const allowReplayBacklog =
         this.replaySpeedMultiplier === ReplaySpeedMultiplier.fastest &&
-        this.lobbyConfig.gameRecord !== undefined;
+        (this.lobbyConfig.gameRecord !== undefined || this.restoringSave);
       const maxBacklog = allowReplayBacklog ? MAX_REPLAY_BACKLOG_TURNS : 0;
 
       const canQueueNextTurn =
@@ -133,12 +141,26 @@ export class LocalServer {
       });
     }
 
-    this.startedAt = Date.now();
+    this.startedAt = this.lobbyConfig.resumeStartedAt ?? Date.now();
     this.clientConnect();
     if (this.lobbyConfig.gameRecord) {
       this.replayTurns = decompressGameRecord(
         this.lobbyConfig.gameRecord,
       ).turns;
+    } else if (this.lobbyConfig.resumeTurns?.length) {
+      this.replayTurns = this.lobbyConfig.resumeTurns;
+      this.restoringSave = true;
+      for (const turn of this.replayTurns) {
+        for (const intent of turn.intents) {
+          if (intent.type === "toggle_pause") {
+            this.resumePaused = intent.paused;
+          }
+        }
+      }
+      this.replaySpeedMultiplier = ReplaySpeedMultiplier.fastest;
+      this.eventBus.emit(
+        new ReplaySpeedChangeEvent(this.replaySpeedMultiplier),
+      );
     }
     if (this.lobbyConfig.gameStartInfo === undefined) {
       throw new Error("missing gameStartInfo");
@@ -183,6 +205,12 @@ export class LocalServer {
         clientID: this.clientID!,
       };
       if (stampedIntent.type === "toggle_pause") {
+        // The UI may emit its initial pause state while a save is replaying.
+        // Saved pause intents are already in replayTurns, so accepting it here
+        // would duplicate the state transition.
+        if (this.restoringSave) {
+          return;
+        }
         if (stampedIntent.paused) {
           // Pausing: add intent and end turn before pause takes effect
           this.intents.push(stampedIntent);
@@ -196,8 +224,8 @@ export class LocalServer {
         }
         return;
       }
-      // Don't process non-pause intents during replays or while paused
-      if (this.lobbyConfig.gameRecord || this.paused) {
+      // Don't process non-pause intents during replays, save catch-up, or while paused
+      if (this.lobbyConfig.gameRecord || this.restoringSave || this.paused) {
         return;
       }
 
@@ -241,7 +269,13 @@ export class LocalServer {
       }
     }
     if (clientMsg.type === "winner") {
+      if (this.restoringSave) {
+        return;
+      }
       this.winner = clientMsg;
+      this.saveChain = this.saveChain
+        .then(() => deleteSingleplayerGame())
+        .catch((error) => console.warn("Failed to delete singleplayer save", error));
       this.allPlayersStats = clientMsg.allPlayersStats;
       if (!this.isReplay) {
         // Archive as soon as the game is decided: endGame() only runs during
@@ -265,10 +299,23 @@ export class LocalServer {
     }
     if (this.replayTurns.length > 0) {
       if (this.turns.length >= this.replayTurns.length) {
-        this.endGame();
-        return;
+        if (this.isReplay) {
+          this.endGame();
+          return;
+        }
+        this.replayTurns = [];
+        this.restoringSave = false;
+        this.paused = this.resumePaused;
+        this.replaySpeedMultiplier = defaultReplaySpeedMultiplier;
+        this.eventBus.emit(
+          new ReplaySpeedChangeEvent(this.replaySpeedMultiplier),
+        );
+        if (this.paused) {
+          return;
+        }
+      } else {
+        this.intents = this.replayTurns[this.turns.length].intents;
       }
-      this.intents = this.replayTurns[this.turns.length].intents;
     }
     const pastTurn: Turn = {
       turnNumber: this.turns.length,
@@ -280,6 +327,13 @@ export class LocalServer {
       type: "turn",
       turn: pastTurn,
     });
+    if (
+      !this.isReplay &&
+      !this.restoringSave &&
+      this.turns.length % AUTOSAVE_INTERVAL_TURNS === 0
+    ) {
+      void this.persistSave();
+    }
   }
 
   public endGame() {
@@ -290,9 +344,37 @@ export class LocalServer {
     if (this.isReplay) {
       return;
     }
+    if (!this.winner) {
+      void this.persistSave();
+    }
     // Fallback for games that end without a winner (e.g. quitting early);
     // decided games were already archived at win time.
     this.archiveGameRecord(true);
+  }
+
+  private async persistSave(): Promise<void> {
+    if (
+      this.isReplay ||
+      this.restoringSave ||
+      this.winner ||
+      this.lobbyConfig.gameStartInfo === undefined
+    ) {
+      return;
+    }
+    const snapshot = {
+      startedAt: this.startedAt,
+      gameStartInfo: this.lobbyConfig.gameStartInfo,
+      // Clone turns as well as the array: hash messages can still mutate the
+      // most recent Turn while an IndexedDB write is queued.
+      turns: this.turns.map((turn) => ({
+        ...turn,
+        intents: turn.intents.map((intent) => ({ ...intent })),
+      })),
+    };
+    this.saveChain = this.saveChain
+      .then(() => saveSingleplayerGame(snapshot))
+      .catch((error) => console.warn("Failed to save singleplayer game", error));
+    await this.saveChain;
   }
 
   private archiveGameRecord(unloading: boolean) {
