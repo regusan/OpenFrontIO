@@ -53,6 +53,7 @@ export class LocalServer {
   // Turns being replayed, either from an archived replay or a local save.
   private replayTurns: Turn[] = [];
   private restoringSave = false;
+  private resumePaused = false;
 
   private turns: Turn[] = [];
 
@@ -148,6 +149,13 @@ export class LocalServer {
     } else if (this.lobbyConfig.resumeTurns?.length) {
       this.replayTurns = this.lobbyConfig.resumeTurns;
       this.restoringSave = true;
+      for (const turn of this.replayTurns) {
+        for (const intent of turn.intents) {
+          if (intent.type === "toggle_pause") {
+            this.resumePaused = intent.paused;
+          }
+        }
+      }
       this.replaySpeedMultiplier = ReplaySpeedMultiplier.fastest;
       this.eventBus.emit(
         new ReplaySpeedChangeEvent(this.replaySpeedMultiplier),
@@ -289,10 +297,14 @@ export class LocalServer {
         }
         this.replayTurns = [];
         this.restoringSave = false;
+        this.paused = this.resumePaused;
         this.replaySpeedMultiplier = defaultReplaySpeedMultiplier;
         this.eventBus.emit(
           new ReplaySpeedChangeEvent(this.replaySpeedMultiplier),
         );
+        if (this.paused) {
+          return;
+        }
       } else {
         this.intents = this.replayTurns[this.turns.length].intents;
       }
