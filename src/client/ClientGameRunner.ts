@@ -109,6 +109,7 @@ export interface LobbyConfig {
   gameRecord?: GameRecord;
   // Turns restored from a local singleplayer save before live play resumes.
   resumeTurns?: Turn[];
+  resumeStartedAt?: number;
   // Watch without playing.
   spectator?: boolean;
 }
