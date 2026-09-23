@@ -256,6 +256,7 @@ export interface JoinLobbyEvent {
   gameRecord?: GameRecord;
   // Turns restored from a local singleplayer save.
   resumeTurns?: Turn[];
+  resumeStartedAt?: number;
   source?: "public" | "private" | "host" | "matchmaking" | "singleplayer";
   publicLobbyInfo?: GameInfo | PublicGameInfo;
   // Watch without playing.
@@ -1466,6 +1467,7 @@ class Client {
           : undefined),
       gameRecord: lobby.gameRecord,
       resumeTurns: lobby.resumeTurns,
+      resumeStartedAt: lobby.resumeStartedAt,
       spectator: lobby.spectator,
     });
 
