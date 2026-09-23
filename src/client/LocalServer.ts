@@ -70,6 +70,7 @@ export class LocalServer {
   // skipped win-time uploads during teardown.
   private archived = false;
   private archiveInFlight = false;
+  private saveChain: Promise<void> = Promise.resolve();
 
   private turnsExecuted = 0;
   private turnStartTime = 0;
@@ -267,7 +268,9 @@ export class LocalServer {
     }
     if (clientMsg.type === "winner") {
       this.winner = clientMsg;
-      void deleteSingleplayerGame();
+      this.saveChain = this.saveChain
+        .then(() => deleteSingleplayerGame())
+        .catch((error) => console.warn("Failed to delete singleplayer save", error));
       this.allPlayersStats = clientMsg.allPlayersStats;
       if (!this.isReplay) {
         // Archive as soon as the game is decided: endGame() only runs during
@@ -353,15 +356,15 @@ export class LocalServer {
     ) {
       return;
     }
-    try {
-      await saveSingleplayerGame({
-        startedAt: this.startedAt,
-        gameStartInfo: this.lobbyConfig.gameStartInfo,
-        turns: this.turns,
-      });
-    } catch (error) {
-      console.warn("Failed to save singleplayer game", error);
-    }
+    const snapshot = {
+      startedAt: this.startedAt,
+      gameStartInfo: this.lobbyConfig.gameStartInfo,
+      turns: [...this.turns],
+    };
+    this.saveChain = this.saveChain
+      .then(() => saveSingleplayerGame(snapshot))
+      .catch((error) => console.warn("Failed to save singleplayer game", error));
+    await this.saveChain;
   }
 
   private archiveGameRecord(unloading: boolean) {
